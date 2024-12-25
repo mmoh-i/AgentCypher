@@ -4,6 +4,7 @@ import logging
 from telegram import Update, Bot
 from telegram.ext import Application, filters, CommandHandler, MessageHandler, ContextTypes
 from langchain_cohere import ChatCohere
+# from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
 import base64
 
@@ -13,7 +14,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize Cohere model
+# Initialize groq model
 api_key = os.getenv("COHERE_API_KEY")
 if not api_key:
     raise ValueError("COHERE_API_KEY environment variable not set")
@@ -25,7 +26,7 @@ if not virustotal_api_key:
     raise ValueError("VIRUSTOTAL_API_KEY environment variable not set")
 
 # Telegram Bot token
-telegram_bot_token = "7701419281:AAF5xDnnpUs6ZvRw8cu_IMc6S93LoyIItgI"#os.getenv("TELEGRAM_BOT_TOKEN")
+telegram_bot_token = os.getenv("TELEGRAM_TOKEN")
 if not telegram_bot_token:
     raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set")
 
@@ -60,8 +61,12 @@ async def check_scam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     text = " ".join(context.args)
     try:
+        # Show typing indicator
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        
         system_message = SystemMessage(
             content="You are a scam detector. Respond with 'Scam:' or 'Not a Scam:' and provide a brief explanation."
+            "especially given your advantage of efficeint twitter data, you can quite know well scam related messages to give justice when detecting scam "
         )
         human_message = HumanMessage(content=f"Analyze this: {text}")
         response = model(messages=[system_message, human_message])
@@ -75,6 +80,9 @@ async def check_scam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def verified_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Fetch recently verified tokens."""
     try:
+        # Show typing indicator
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        
         url = "https://api.rugcheck.xyz/v1/stats/verified"
         response = requests.get(url, headers={"Accept": "application/json"})
         if response.status_code == 200:
@@ -89,21 +97,23 @@ async def verified_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error(f"Error fetching token verification status: {e}")
         await update.message.reply_text("An error occurred while fetching token verification status.")
 
-async def scan_url_conversational(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Scan a URL provided conversationally."""
-    user_message = update.message.text.strip()
-
-    if not user_message.startswith("scan url"):
-        return  # Ignore messages not related to scanning URLs
-
-    scan_url = user_message.replace("scan url", "").strip()
-    if not scan_url:
-        await update.message.reply_text("Please provide a URL to scan after 'scan url'.")
+async def scan_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Scan a URL."""
+    # Show typing indicator
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    
+    if len(context.args) == 0:
+        await update.message.reply_text("Please provide a URL to scan. Usage: /scan_url <url>")
         return
 
+    url = " ".join(context.args)
+    await process_url_scan(update, url)
+
+async def process_url_scan(update: Update, url: str) -> None:
+    """Process URL scanning logic."""
     try:
         # Encode the URL for VirusTotal's database lookup
-        url_id = base64.urlsafe_b64encode(scan_url.encode()).decode().strip("=")
+        url_id = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
         url_data = requests.get(
             f"https://www.virustotal.com/api/v3/urls/{url_id}",
             headers={"x-apikey": virustotal_api_key},
@@ -133,26 +143,56 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
     user_message = update.message.text
 
+    # Check if the message is about scanning a URL
+    if user_message.lower().startswith("scan url"):
+        url = user_message[8:].strip()
+        if url:
+            await process_url_scan(update, url)
+            return
+
+    # Show typing indicator
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
     # Retrieve user memory and update it
     conversation = user_memory.get(user.id, [])
-    conversation.append(f"User: {user_message}")
-
+    
     try:
-        system_message = SystemMessage(
-            content="You are a helpful agent that assists users in detecting scam messages, suspicious web3 investment URLs, verifying tokens, and ensuring Solana on-chain product security. Maintain context across user queries."
-        )
-        human_message = HumanMessage(content=user_message)
-        response = model(messages=[system_message, *conversation, human_message])
-
-        # Save response to memory and reply
-        conversation.append(f"Agent: {response.content}")
-        user_memory[user.id] = conversation
-
+        # Create message history for context
+        messages = [
+            SystemMessage(
+                content="""You are AgentCypher, a helpful AI assistant that specializes in:
+                1. Detecting crypto and web3 scams
+                2. Analyzing suspicious URLs
+                3. Verifying tokens and smart contracts
+                4. Providing general blockchain security advice
+                
+                Keep your responses concise and focused on helping users with security-related queries.
+                If you're unsure about something, be honest about it."""
+            )
+        ]
+        
+        # Add conversation history
+        if conversation:
+            messages.extend([HumanMessage(content=msg) for msg in conversation[-4:]])  # Last 2 exchanges
+            
+        # Add current message
+        messages.append(HumanMessage(content=user_message))
+        
+        # Get response from model
+        response = model.invoke(messages)
+        
+        # Update conversation memory
+        conversation.append(user_message)
+        conversation.append(response.content)
+        user_memory[user.id] = conversation[-10:]  # Keep last 10 messages
+        
+        # Send response
         await update.message.reply_text(response.content)
+        
     except Exception as e:
-        logger.error(f"Error handling message: {e}")
-        await update.message.reply_text("Sorry, I couldn't process your message at the moment.")
-
+        logger.error(f"Error handling message: {str(e)}")
+        logger.error(f"User message was: {user_message}")
+        await update.message.reply_text("I'm currently experiencing some technical difficulties. Please try using specific commands like /check_scam or /scan_url for now.")
 
 def main() -> None:
     """Start the bot."""
@@ -163,14 +203,13 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("check_scam", check_scam))
     application.add_handler(CommandHandler("verified_tokens", verified_tokens))
+    application.add_handler(CommandHandler("scan_url", scan_url))
 
-    # Message handlers for conversational responses and URL scanning
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, scan_url_conversational))
+    # Message handler for general messages (including URL scanning)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Start the bot
     application.run_polling()
-
 
 if __name__ == "__main__":
     main()

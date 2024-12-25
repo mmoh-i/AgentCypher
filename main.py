@@ -12,7 +12,7 @@ import base64
 # Global variables
 model = None
 known_scams = []
-api_key = "648641a00ef899a54caafd35a54df3885fd8068977baeb8614ca9ac590bac36d"
+api_key = os.getenv("VIRUSTOTAL_API_KEY")
 if not api_key:
     raise ValueError("VIRUSTOTAL_API_KEY environment variable not set")
 client = vt.Client(api_key)
